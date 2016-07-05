@@ -168,15 +168,20 @@ amd_kfd_fence_wait(struct fence *f, bool intr, signed long timeout)
 	spin_unlock_irqrestore(f->lock, flags);
 
 	if (fence->mm != current->mm) {
-		/* TODO: */
 		/* The current process is not same as fence process. Evict all
 		 * user queues in all devices that belongs to the fence process.
 		 * Then signal the fence so that BOs of that process could be
-		 * evicted if required
+		 * evicted if required. Quiesce will also schedule worker thread
+		 * to restore the BOs and user queues after a TIMEOUT.
 		 */
-
-		/* TODO: */
-		/* Start restore thread to restore all evicted BOs */
+		ret = kgd2kfd->quiesce_mm(NULL, fence->mm);
+		if (ret) {
+			ret = 0; /* Return timeout error */
+			pr_err("Failed to quiesce user queues. Cannot evict BOs\n");
+		} else {
+			amd_kfd_fence_signal(f);
+			ret = timeout;
+		}
 	} else {
 		/* The current process is same as the fence process. Just wait
 		 * for the specified timeout
