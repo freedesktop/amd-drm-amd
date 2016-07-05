@@ -691,14 +691,21 @@ void kgd2kfd_interrupt(struct kfd_dev *kfd, const void *ih_ring_entry)
 	spin_unlock(&kfd->interrupt_lock);
 }
 
+/** kgd2kfd_quiesce_mm - Quiesce all user queue access to specified KFD device
+ *  or all devices belonging to a KFD process.
+ *
+ * @kfd: If specified, only queues on this devices is quiesced. If NULL, then
+ *  quiesce all user queues on all devices
+ * @mm: mm_struct identifying the KFD process
+ */
 int kgd2kfd_quiesce_mm(struct kfd_dev *kfd, struct mm_struct *mm)
 {
 	struct kfd_process *p;
 	struct kfd_process_device *pdd;
 	int r;
+	unsigned int n_evicted = 0;
 
-	BUG_ON(kfd == NULL);
-	if (!kfd->init_complete)
+	if (kfd && !kfd->init_complete)
 		return 0;
 
 	/* Because we are called from arbitrary context (workqueue) as opposed
@@ -710,22 +717,57 @@ int kgd2kfd_quiesce_mm(struct kfd_dev *kfd, struct mm_struct *mm)
 		return -ENODEV;
 
 	r = -ENODEV;
-	pdd = kfd_get_process_device_data(kfd, p);
-	if (pdd)
-		r = process_evict_queues(kfd->dqm, &pdd->qpd);
+
+	if (kfd) {
+		pdd = kfd_get_process_device_data(kfd, p);
+		if (pdd)
+			r = process_evict_queues(kfd->dqm, &pdd->qpd);
+	} else {
+		list_for_each_entry(pdd, &p->per_device_data,
+				    per_device_list) {
+			r = process_evict_queues(pdd->dev->dqm, &pdd->qpd);
+			if (r != 0) {
+				pr_err("Failed to evict process queues\n");
+				goto fail;
+			}
+			n_evicted++;
+		}
+	}
+
+	kfd_unref_process(p);
+	return r;
+
+fail:
+	/* To keep state consistent, roll back partial eviction by
+	* restoring queues
+	*/
+	list_for_each_entry(pdd, &p->per_device_data, per_device_list) {
+		if (n_evicted == 0)
+			break;
+		if (process_restore_queues(pdd->dev->dqm, &pdd->qpd))
+			pr_err("Failed to restore queues\n");
+
+		n_evicted--;
+	}
 
 	kfd_unref_process(p);
 	return r;
 }
 
+/** kgd2kfd_resume_mm - Resume all user queue access to specified KFD device
+ *  or all devices belonging to a KFD process.
+ *
+ * @kfd: If specified, only queues on this devices is resumed. If NULL, then
+ *  resume all user queues on all devices
+ * @mm: mm_struct identifying the KFD process
+ */
 int kgd2kfd_resume_mm(struct kfd_dev *kfd, struct mm_struct *mm)
 {
 	struct kfd_process *p;
 	struct kfd_process_device *pdd;
-	int r;
+	int r, ret = 0;
 
-	BUG_ON(kfd == NULL);
-	if (!kfd->init_complete)
+	if (kfd && !kfd->init_complete)
 		return 0;
 
 	/* Because we are called from arbitrary context (workqueue) as opposed
@@ -737,15 +779,37 @@ int kgd2kfd_resume_mm(struct kfd_dev *kfd, struct mm_struct *mm)
 		return -ENODEV;
 
 	r = -ENODEV;
-	pdd = kfd_get_process_device_data(kfd, p);
-	if (pdd) {
-		if (kfd->dqm->sched_policy == KFD_SCHED_POLICY_NO_HWS)
-			down_read(&mm->mmap_sem);
 
-		r = process_restore_queues(kfd->dqm, &pdd->qpd);
+	if (kfd) {
+		pdd = kfd_get_process_device_data(kfd, p);
+		if (pdd) {
+			if (kfd->dqm->sched_policy == KFD_SCHED_POLICY_NO_HWS)
+				down_read(&mm->mmap_sem);
 
-		if (kfd->dqm->sched_policy == KFD_SCHED_POLICY_NO_HWS)
-			up_read(&mm->mmap_sem);
+			r = process_restore_queues(kfd->dqm, &pdd->qpd);
+
+			if (kfd->dqm->sched_policy == KFD_SCHED_POLICY_NO_HWS)
+				up_read(&mm->mmap_sem);
+		}
+	} else {
+		list_for_each_entry(pdd, &p->per_device_data,
+				    per_device_list) {
+
+			if (pdd->dev->dqm->sched_policy ==
+					KFD_SCHED_POLICY_NO_HWS)
+				down_read(&mm->mmap_sem);
+
+			r = process_restore_queues(pdd->dev->dqm, &pdd->qpd);
+			if (r != 0) {
+				pr_err("Failed to restore process queues\n");
+				if (ret == 0)
+					ret = r;
+			}
+
+			if (pdd->dev->dqm->sched_policy ==
+					KFD_SCHED_POLICY_NO_HWS)
+				up_read(&mm->mmap_sem);
+		}
 	}
 
 	kfd_unref_process(p);

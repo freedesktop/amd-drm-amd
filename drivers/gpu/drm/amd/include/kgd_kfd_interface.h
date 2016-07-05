@@ -379,9 +379,11 @@ struct kfd2kgd_calls {
  *
  * @resume: Notifies amdkfd about a resume action done to a kgd device
  *
- * @quiesce_mm: Quiesce all user queue access to specified MM address space
+ * @quiesce_mm: Quiesce all user queue access to specified KFD device or all
+ * devices belonging to a KFD process.
  *
- * @resume_mm: Resume user queue access to specified MM address space
+ * @resume_mm: Resume user queue access to specified KFD device or all
+ * devices belonging to a KFD process.
  *
  * This structure contains function callback pointers so the kgd driver
  * will notify to the amdkfd about certain status changes.
