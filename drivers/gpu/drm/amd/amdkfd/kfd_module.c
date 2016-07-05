@@ -134,6 +134,7 @@ static int __init kfd_module_init(void)
 		goto err_topology;
 
 	kfd_process_create_wq();
+	kfd_restore_create_wq();
 
 	amdkfd_init_completed = 1;
 
@@ -157,6 +158,7 @@ static void __exit kfd_module_exit(void)
 	amdkfd_init_completed = 0;
 
 	kfd_close_peer_direct();
+	kfd_restore_destroy_wq();
 	kfd_process_destroy_wq();
 	kfd_topology_shutdown();
 	kfd_chardev_exit();

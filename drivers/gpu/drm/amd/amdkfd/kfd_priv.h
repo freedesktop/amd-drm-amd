@@ -663,6 +663,9 @@ struct kfd_process {
 	struct rb_root bo_interval_tree;
 
 	void *master_vm;
+
+	/* For restoring BOs after eviction */
+	struct delayed_work restore_work;
 };
 
 /**
@@ -939,6 +942,16 @@ int restore(struct kfd_dev *kfd);
 /* PeerDirect support */
 int kfd_init_peer_direct(void);
 void kfd_close_peer_direct(void);
+
+/* KFD Memory Eviction */
+/* Appox. wait time before attempting to restore evicted BOs */
+#define PROCESS_RESTORE_TIME_MS 10000
+/* Approx. back off time if restore fails due to lack of memory */
+#define PROCESS_BACK_OFF_TIME_MS 5000
+
+void kfd_restore_create_wq(void);
+void kfd_restore_destroy_wq(void);
+void kfd_restore_bo_worker(struct work_struct *work);
 
 /* Debugfs */
 #if defined(CONFIG_DEBUG_FS)

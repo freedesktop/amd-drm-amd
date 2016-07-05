@@ -26,6 +26,7 @@
 #include <linux/slab.h>
 #include <linux/highmem.h>
 #include <linux/debugfs.h>
+#include <linux/delay.h>
 #include "kfd_priv.h"
 #include "kfd_device_queue_manager.h"
 #include "kfd_pm4_headers.h"
@@ -193,6 +194,9 @@ static int kfd_gtt_sa_init(struct kfd_dev *kfd, unsigned int buf_size,
 static void kfd_gtt_sa_fini(struct kfd_dev *kfd);
 
 static int kfd_resume(struct kfd_dev *kfd);
+
+/* Memory restore work queue. */
+static struct workqueue_struct *kfd_restore_wq;
 
 static const struct kfd_device_info *lookup_device_info(unsigned short did)
 {
@@ -691,6 +695,61 @@ void kgd2kfd_interrupt(struct kfd_dev *kfd, const void *ih_ring_entry)
 	spin_unlock(&kfd->interrupt_lock);
 }
 
+/** kfd_schedule_restore_bos_and_queues - Schedules work queue that will
+ *   restore all BOs that belong to given process and then restore its queues
+ *
+ * @mm: mm_struct that identifies the KFD process
+ *
+ */
+static int kfd_schedule_restore_bos_and_queues(struct kfd_process *p)
+{
+	if (delayed_work_pending(&p->restore_work)) {
+		WARN(1, "Trying to evict an unrestored process\n");
+		cancel_delayed_work_sync(&p->restore_work);
+	}
+
+	/* During process initialization restore_work is initialized
+	 * to kfd_restore_bo_worker
+	 */
+	queue_delayed_work(kfd_restore_wq, &p->restore_work,
+			   PROCESS_RESTORE_TIME_MS);
+	return 0;
+}
+
+void kfd_restore_bo_worker(struct work_struct *work)
+{
+	struct delayed_work *dwork;
+	struct kfd_process *p;
+	struct kfd_process_device *pdd;
+	int ret = 0;
+
+	dwork = to_delayed_work(work);
+
+	/* Process termination destroys this worker thread. So during the
+	 * lifetime of this thread, kfd_process p will be valid
+	 */
+	p = container_of(dwork, struct kfd_process, restore_work);
+
+	/* Call restore_process_bos on the first KGD device. This function
+	 * takes care of restoring the whole process including other devices.
+	 * Restore can fail if enough memory is not available. If so,
+	 * reschedule again.
+	 */
+	pdd = list_first_entry(&p->per_device_data,
+			       struct kfd_process_device,
+			       per_device_list);
+
+	ret = pdd->dev->kfd2kgd->restore_process_bos(p->master_vm);
+	if (ret) {
+		kfd_schedule_restore_bos_and_queues(p);
+		return;
+	}
+
+	ret = kgd2kfd_resume_mm(NULL, p->mm);
+	if (ret)
+		pr_err("Failed to resume user queues\n");
+}
+
 /** kgd2kfd_quiesce_mm - Quiesce all user queue access to specified KFD device
  *  or all devices belonging to a KFD process.
  *
@@ -732,6 +791,8 @@ int kgd2kfd_quiesce_mm(struct kfd_dev *kfd, struct mm_struct *mm)
 			}
 			n_evicted++;
 		}
+
+		kfd_schedule_restore_bos_and_queues(p);
 	}
 
 	kfd_unref_process(p);
@@ -999,4 +1060,19 @@ int kfd_gtt_sa_free(struct kfd_dev *kfd, struct kfd_mem_obj *mem_obj)
 
 	kfree(mem_obj);
 	return 0;
+}
+
+void kfd_restore_create_wq(void)
+{
+	if (!kfd_restore_wq)
+		kfd_restore_wq = create_workqueue("kfd_restore_wq");
+}
+
+void kfd_restore_destroy_wq(void)
+{
+	if (kfd_restore_wq) {
+		flush_workqueue(kfd_restore_wq);
+		destroy_workqueue(kfd_restore_wq);
+		kfd_restore_wq = NULL;
+	}
 }
