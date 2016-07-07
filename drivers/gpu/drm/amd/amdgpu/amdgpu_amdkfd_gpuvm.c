@@ -297,6 +297,44 @@ error:
 	return ret;
 }
 
+static int amdgpu_amdkfd_bo_validate(struct amdgpu_bo *bo, uint32_t domain)
+{
+	int ret = 0;
+
+	if (!amdgpu_ttm_tt_get_usermm(bo->tbo.ttm)) {
+		amdgpu_ttm_placement_from_domain(bo, domain);
+		ret = ttm_bo_validate(&bo->tbo, &bo->placement,
+				      false, false);
+	} else {
+		/* Userptrs are not pinned. Therefore we can use the
+		 * bo->pin_count for our version of pinning without conflict.
+		 */
+		if (bo->pin_count == 0) {
+			amdgpu_ttm_placement_from_domain(bo, domain);
+			ret = ttm_bo_validate(&bo->tbo, &bo->placement,
+					      true, false);
+			if (!ret)
+				bo->pin_count++;
+		}
+	}
+
+	return ret;
+}
+
+static int amdgpu_amdkfd_bo_invalidate(struct amdgpu_bo *bo)
+{
+	int ret = 0;
+
+	if (amdgpu_ttm_tt_get_usermm(bo->tbo.ttm) &&
+		(--bo->pin_count == 0)) {
+		amdgpu_ttm_placement_from_domain(bo, AMDGPU_GEM_DOMAIN_CPU);
+		ret = ttm_bo_validate(&bo->tbo, &bo->placement, true, false);
+		if (ret != 0)
+			pr_err("amdgpu: failed to invalidate userptr BO\n");
+	}
+	return ret;
+}
+
 static int try_pin_pts(struct amdgpu_vm *vm)
 {
 	int i, ret = 0;
@@ -821,15 +859,10 @@ static int map_bo_to_gpuvm(struct amdgpu_device *adev, struct amdgpu_bo *bo,
 	struct amdgpu_vm *vm;
 	int ret;
 
-	/*
-	 * We need to pin the allocated BO and PTs not yet pinned to
-	 * create a mapping of virtual to MC address. PD is already pinned
-	 * in amdgpu_amdkfd_gpuvm_create_process_vm().
-	 */
-	/* Pin BO*/
-	ret = try_pin_bo(bo, domain);
+	/* Validate BO.*/
+	ret = amdgpu_amdkfd_bo_validate(bo, domain);
 	if (ret != 0) {
-		pr_err("amdkfd: Failed to pin BO\n");
+		pr_err("amdkfd: Failed to validate BO\n");
 		return ret;
 	}
 
@@ -885,9 +918,7 @@ err_failed_to_vm_clear_invalids:
 	amdgpu_vm_bo_update(adev, bo_va, NULL);
 	amdgpu_sync_fence(adev, sync, bo_va->last_pt_update);
 err_unpin_bo:
-	/* PTs are not needed to be unpinned*/
-	unpin_bo(bo);
-
+	amdgpu_amdkfd_bo_invalidate(bo);
 	return ret;
 }
 
@@ -998,6 +1029,11 @@ int amdgpu_amdkfd_gpuvm_free_memory_of_gpu(
 	if (unlikely(ret != 0))
 		return ret;
 
+	/* TODO: For interop BOs this will remove any fences added by
+	 * the graphics driver. Change this to remove only the KFD
+	 * eviction fence
+	 */
+	amdgpu_bo_fence(mem->data2.bo, NULL, false);
 	pr_debug("Releasing BO with VA 0x%llx, size %lu bytes\n",
 					mem->data2.va,
 					mem->data2.bo->tbo.mem.size);
@@ -1044,6 +1080,7 @@ int amdgpu_amdkfd_gpuvm_map_memory_to_gpu(
 	struct bo_vm_reservation_context ctx;
 	struct kfd_bo_va_list *bo_va_entry = NULL;
 	struct kfd_bo_va_list *bo_va_entry_aql = NULL;
+	struct amdkfd_vm *kfd_vm = (struct amdkfd_vm *)vm;
 
 	BUG_ON(kgd == NULL);
 	BUG_ON(mem == NULL);
@@ -1117,6 +1154,9 @@ int amdgpu_amdkfd_gpuvm_map_memory_to_gpu(
 		}
 	}
 
+	if (amdgpu_ttm_tt_get_usermm(bo->tbo.ttm) == NULL)
+		amdgpu_bo_fence(bo, &kfd_vm->master->eviction_fence->base,
+				true);
 	unreserve_bo_and_vms(&ctx, true);
 
 	mutex_unlock(&mem->data2.lock);
@@ -1287,8 +1327,7 @@ static int unmap_bo_from_gpuvm(struct amdgpu_device *adev,
 
 	amdgpu_vm_clear_invalids(adev, vm, sync);
 
-	/* Unpin BO*/
-	unpin_bo(bo);
+	amdgpu_amdkfd_bo_invalidate(bo);
 
 	return 0;
 }
