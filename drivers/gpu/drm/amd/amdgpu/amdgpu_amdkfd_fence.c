@@ -75,7 +75,7 @@ struct amdgpu_amdkfd_fence *amdgpu_amdkfd_fence_create(unsigned context)
 	return fence;
 }
 
-static struct amdgpu_amdkfd_fence *to_amdgpu_amdkfd_fence(struct fence *f)
+struct amdgpu_amdkfd_fence *to_amdgpu_amdkfd_fence(struct fence *f)
 {
 	struct amdgpu_amdkfd_fence *fence;
 

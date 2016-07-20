@@ -80,6 +80,7 @@ struct amdgpu_amdkfd_fence {
 
 struct amdgpu_amdkfd_fence *amdgpu_amdkfd_fence_create(unsigned context);
 int amdgpu_amdkfd_fence_reset(struct fence *f);
+struct amdgpu_amdkfd_fence *to_amdgpu_amdkfd_fence(struct fence *f);
 
 /* struct amdkfd_vm -
  *  For Memory Eviction KGD requires a mechanism to keep track of all KFD BOs
