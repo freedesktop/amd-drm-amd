@@ -1149,7 +1149,7 @@ static int kfd_ioctl_alloc_memory_of_gpu(struct file *filep,
 			args->va_addr, args->size);
 	up_write(&p->lock);
 	if (idr_handle < 0) {
-		dev->kfd2kgd->free_memory_of_gpu(dev->kgd,
+		dev->kfd2kgd->free_memory_of_gpu(dev->kgd, pdd->vm,
 						 (struct kgd_mem *) mem);
 		return -EFAULT;
 	}
@@ -1276,7 +1276,7 @@ static int kfd_ioctl_alloc_memory_of_gpu_new(struct file *filep,
 			args->va_addr, args->size);
 	up_write(&p->lock);
 	if (idr_handle < 0) {
-		dev->kfd2kgd->free_memory_of_gpu(dev->kgd,
+		dev->kfd2kgd->free_memory_of_gpu(dev->kgd, pdd->vm,
 						 (struct kgd_mem *) mem);
 		return -EFAULT;
 	}
@@ -1327,7 +1327,8 @@ static int kfd_ioctl_free_memory_of_gpu(struct file *filep,
 
 	up_write(&p->lock);
 
-	ret = dev->kfd2kgd->free_memory_of_gpu(dev->kgd, buf_obj->mem);
+	ret = dev->kfd2kgd->free_memory_of_gpu(dev->kgd, pdd->vm,
+					       buf_obj->mem);
 
 	/* If freeing the buffer failed, leave the handle in place for
 	 * clean-up during process tear-down. */
@@ -1767,7 +1768,7 @@ static int kfd_ioctl_import_dmabuf(struct file *filep,
 			args->va_addr, size);
 	up_write(&p->lock);
 	if (idr_handle < 0) {
-		dev->kfd2kgd->free_memory_of_gpu(dev->kgd,
+		dev->kfd2kgd->free_memory_of_gpu(dev->kgd, pdd->vm,
 						 (struct kgd_mem *)mem);
 		return -EFAULT;
 	}
